@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend-tests:
+    name: Backend tests (all 3 queue drivers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `app` depends_on mysql/redis with condition: service_healthy, so this
+      # one command also starts and waits on both — same stack as local dev,
+      # not a separate CI-only setup.
+      - name: Start the app stack
+        run: docker compose up -d --build app
+
+      - name: Wait for vendor/ to be in place
+        run: |
+          for i in $(seq 1 30); do
+            if docker compose exec -T app test -f vendor/autoload.php; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "vendor/autoload.php never appeared" >&2
+          exit 1
+
+      - name: composer test
+        run: docker compose exec -T app composer test
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose logs
+
+  frontend:
+    name: Frontend build + lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm run lint
