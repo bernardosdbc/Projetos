@@ -13,6 +13,8 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      redis:
+        condition: service_healthy
 
   worker-1:
     build: .
@@ -25,6 +27,8 @@ services:
       - ./src/.env
     depends_on:
       mysql:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   worker-2:
@@ -39,6 +43,8 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      redis:
+        condition: service_healthy
 
   worker-3:
     build: .
@@ -51,6 +57,8 @@ services:
       - ./src/.env
     depends_on:
       mysql:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   mysql:
@@ -66,6 +74,16 @@ services:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
       interval: 5s
       timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
       retries: 20
 
   adminer:

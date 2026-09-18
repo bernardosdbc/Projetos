@@ -23,5 +23,9 @@ src/storage/pail
 src/.phpunit.cache
 src/.phpunit.result.cache
 
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
 # Docker / local
 mysql_data/

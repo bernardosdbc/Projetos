@@ -2,8 +2,8 @@
 
 namespace App\Console\Commands;
 
+use App\Contracts\JobQueueInterface;
 use App\Jobs\Handlers\HandlerRegistry;
-use App\Services\JobQueueService;
 use Illuminate\Console\Command;
 
 class WorkJobs extends Command
@@ -11,7 +11,7 @@ class WorkJobs extends Command
     protected $signature = 'jobs:work {--worker-id= : Identifier for this worker} {--sleep=1} {--timeout=120 : Seconds before a processing job is considered stuck}';
     protected $description = 'Process distributed jobs from the MySQL queue';
 
-    public function handle(JobQueueService $queue, HandlerRegistry $handlers): int
+    public function handle(JobQueueInterface $queue, HandlerRegistry $handlers): int
     {
         $workerId = $this->option('worker-id') ?: gethostname();
         $timeoutSeconds = max(1, (int) $this->option('timeout'));

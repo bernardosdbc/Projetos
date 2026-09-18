@@ -2,11 +2,12 @@
 
 namespace App\Services;
 
+use App\Contracts\JobQueueInterface;
 use App\Models\Job;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
-class JobQueueService
+class MysqlJobQueueService implements JobQueueInterface
 {
     public function enqueue(string $type, array $payload, string $idempotencyKey): Job
     {
@@ -81,6 +82,9 @@ class JobQueueService
 
     public function recoverStuckJobs(int $timeoutSeconds = 120): int
     {
-        return Job::query()->where('status', 'processing')->where('reserved_at', '<', now()->subSeconds($timeoutSeconds))->update(['status' => 'pending', 'available_at' => now()]);
+        return Job::query()
+            ->where('status', 'processing')
+            ->where('reserved_at', '<', now()->subSeconds($timeoutSeconds))
+            ->update(['status' => 'pending', 'available_at' => now()]);
     }
 }

@@ -1,75 +1,81 @@
 # Continuação do projeto
 
-Este documento registra o ponto de retomada da implementação descrita em [PLANO.md](PLANO.md).
+Este documento registra o ponto de retomada. Plano: [PLANO.md](PLANO.md).
 
-## Checkpoint atual — Fase 1 fechada
+## Checkpoint atual — Fase 2 iniciada (Redis)
 
-Núcleo do sistema validado de ponta a ponta.
+`QUEUE_DRIVER=redis`. MySQL continua como registro durável (API/stats); o claim da fila é Redis.
 
 ### Ambiente
 
-- `app` em `http://localhost:8010`
-- MySQL healthy
-- Workers `worker-1/2/3` **stopped** (default `--timeout=120`)
+- API `http://localhost:8010`
+- Front `http://localhost:5173` (se `npm run dev`)
+- MySQL healthy · Redis healthy
+- Workers `worker-1/2/3` Up
 
-### Provas fechadas
-
-| Prova | Resultado |
-|---|---|
-| Locking §9.1 (200 jobs, 3 workers) | `completed=200`, `runs=200`, `dupes=0` |
-| Retry / backoff | fail_times=2 → 30s → 60s → completed |
-| Dead letter API | `dead` → retry com `attempts=0` |
-| Worker morto §9.3 | ver abaixo |
-| Idempotência camada 2 | 2 runs do handler, **1** recibo |
-
-### Worker morto §9.3 — passou
+### Prova Redis (primeira fatia) — passou
 
 ```text
-READY_TO_KILL reserved_by=worker-1 attempts=1
-after_kill status=processing attempts=1   # recovery NÃO incrementa attempts
-DONE attempts=2 runs=2                     # 2º claim incrementa; 2 invocações do handler
-receipts=1                                 # efeito colateral deduplicado
+jobs:seed-concurrency 50 --fresh
+completed=50
+pending=0
+dupes=0
+workers=3
 ```
 
-Procedimento usado:
+Claim via `BRPOPLPUSH` (`jobs:ready` → `jobs:processing`); backoff em ZSET `jobs:delayed`.
 
-1. Só `worker-1` pegou o job (`sleep_seconds=45`)
-2. `docker kill` no container no meio do sleep
-3. Subiu `worker-2` com recovery (`--timeout` curto na janela do teste)
-4. Job voltou a `pending` sem bump de `attempts`, depois completed pelo worker-2
+### Arquitetura Fase 2
 
-### Entregue no código
+| Peça | Papel |
+|---|---|
+| `JobQueueInterface` | Contrato único |
+| `MysqlJobQueueService` | Fase 1 (`FOR UPDATE`) |
+| `RedisJobQueueService` | Fase 2 (`BRPOPLPUSH` + delayed) |
+| `QUEUE_DRIVER=mysql\|redis` | Troca no `.env` |
 
-- Fila MySQL + claim `lockForUpdate`
-- `jobs:work --worker-id --sleep --timeout` (default 120)
-- `job_runs` + `jobs:seed-concurrency`
-- Handler com `fail_times`, `sleep_seconds`, `idempotency_receipts`
-- `DeadJobController` + rotas
-- `QUEUE_CLAIM_LOCK` para calibração negativa §9.2 (ainda não executada)
+Chaves Redis:
 
-## Próxima retomada (opcional)
+- `jobs:ready` — LIST
+- `jobs:delayed` — ZSET (`score = available_at`)
+- `jobs:processing` — LIST
+- `jobs:meta:{id}` — HASH (`reserved_at`, `reserved_by`)
 
-1. Teste negativo §9.2: `QUEUE_CLAIM_LOCK=false`, reseedar, esperar `dupes > 0`
-2. Roadmap fora da Fase 1: Redis, prioridade, `execute_at`, dashboard
-3. Commit / branch — só se pedido
+### Fase 1 (ainda válida)
+
+Locking MySQL, retry, dead letter, worker morto, front React — ver histórico abaixo / git `c770a5a`.
+
+Voltar à Fase 1: `QUEUE_DRIVER=mysql` e reiniciar app/workers.
+
+## Próxima fatia Fase 2
+
+1. Repetir prova §9.1 com 200 jobs no Redis
+2. Provar retry/backoff só via delayed ZSET (wall-clock ou promote)
+3. Provar recovery de worker morto no meta Redis
+4. (Opcional) Streams `XREADGROUP` como variante e comparar
+5. Commit da Fase 2 quando pedir
+
+## Frontend React/Vite
+
+```powershell
+cd frontend
+npm run dev
+```
+
+http://localhost:5173 — proxy `/api` → `:8010`.
 
 ## Comandos úteis
 
 ```powershell
-docker compose up -d app
-docker compose up -d worker-1 worker-2 worker-3
-docker compose stop worker-1 worker-2 worker-3
-docker compose exec app php artisan jobs:seed-concurrency 200 --fresh
-docker compose exec app php artisan route:list --path=api
+docker compose up -d app mysql redis worker-1 worker-2 worker-3
+docker compose exec app php artisan jobs:seed-concurrency 50 --fresh
+# trocar driver:
+# editar src/.env QUEUE_DRIVER=mysql|redis  e reiniciar app/workers
 ```
 
-## Regras arquiteturais mantidas
+## Regras mantidas
 
-- Worker = Artisan `jobs:work`
-- Fila Fase 1 = MySQL
 - `attempts` só no claim
-- Claim com `lockForUpdate()` (salvo `QUEUE_CLAIM_LOCK=false`)
-- Falha recuperável → `pending` + backoff
-- Falha terminal → `dead`
 - Recovery de timeout não incrementa `attempts`
-- Idempotência de request ≠ idempotência de efeito colateral
+- Idempotência request ≠ efeito colateral
+- Worker = Artisan `jobs:work`
