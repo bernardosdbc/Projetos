@@ -2,7 +2,24 @@
 
 Este documento registra o ponto de retomada. Plano: [PLANO.md](PLANO.md).
 
-## Checkpoint atual — agendamento (`execute_at`)
+## Checkpoint atual — handler `smoke_check`
+
+Primeira fatia de uma ideia de usar este repo como laboratório de fila no
+trabalho (health-check enfileirado, com retry/backoff/DLQ de graça em vez
+de script solto). Implementado **só** o handler — sem integração com
+mypm/`achados/`/Cursor skill, que dependem de infra fora deste repo e
+ficaram de fora por decisão explícita, não por esquecimento.
+
+`payload.targets` (lista de URLs) — se vazio, checa o próprio
+`GET /api/health` deste app (`http://app:8000/api/health`, nome do serviço
+Docker, alcançável pelos workers). Cada alvo é um GET com timeout
+(`payload.timeout_seconds`, default 5s); qualquer falha lança e o job
+segue o mesmo caminho de retry/backoff dos outros tipos — se esgotar as
+tentativas, cai em `dead` e aparece em `GET /dead-jobs` como sinal de
+"algo está fora do ar", sem alerta dedicado.
+
+Testado: self-check (sem `targets`) completa; alvo inexistente falha com
+`last_error` descritivo e agenda retry.
 
 Sem coluna nova: `execute_at` no `POST /jobs` é só o seed de `available_at`
 (o mesmo campo que o retry/backoff já usa) — `JobQueueInterface::enqueue()`

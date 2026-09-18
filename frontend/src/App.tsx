@@ -15,12 +15,13 @@ function priorityBadge(priority: string) {
 }
 
 function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
-  const [type, setType] = useState<'send_email' | 'generate_report'>('send_email')
+  const [type, setType] = useState<'send_email' | 'generate_report' | 'smoke_check'>('send_email')
   const [priority, setPriority] = useState<JobPriority>('normal')
   const [executeAt, setExecuteAt] = useState('')
   const [to, setTo] = useState('teste@email.com')
   const [report, setReport] = useState('sales')
   const [period, setPeriod] = useState('2026-09')
+  const [targets, setTargets] = useState('')
   const [failTimes, setFailTimes] = useState('')
   const [sleepSeconds, setSleepSeconds] = useState('')
   const [idempotencyKey, setIdempotencyKey] = useState(() => `ui-${crypto.randomUUID().slice(0, 8)}`)
@@ -35,7 +36,14 @@ function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
     const payload: Record<string, unknown> =
       type === 'send_email'
         ? { to }
-        : { report, period }
+        : type === 'generate_report'
+          ? { report, period }
+          : {
+              targets: targets
+                .split('\n')
+                .map((line) => line.trim())
+                .filter((line) => line !== ''),
+            }
 
     if (failTimes !== '') payload.fail_times = Number(failTimes)
     if (sleepSeconds !== '') payload.sleep_seconds = Number(sleepSeconds)
@@ -64,10 +72,11 @@ function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
         Tipo
         <select
           value={type}
-          onChange={(e) => setType(e.target.value as 'send_email' | 'generate_report')}
+          onChange={(e) => setType(e.target.value as 'send_email' | 'generate_report' | 'smoke_check')}
         >
           <option value="send_email">send_email</option>
           <option value="generate_report">generate_report</option>
+          <option value="smoke_check">smoke_check</option>
         </select>
       </label>
       <label>
@@ -88,12 +97,13 @@ function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
           onChange={(e) => setExecuteAt(e.target.value)}
         />
       </label>
-      {type === 'send_email' ? (
+      {type === 'send_email' && (
         <label>
           Destino (payload.to)
           <input value={to} onChange={(e) => setTo(e.target.value)} required />
         </label>
-      ) : (
+      )}
+      {type === 'generate_report' && (
         <>
           <label>
             Relatório (payload.report)
@@ -104,6 +114,18 @@ function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
             <input value={period} onChange={(e) => setPeriod(e.target.value)} />
           </label>
         </>
+      )}
+      {type === 'smoke_check' && (
+        <label>
+          URLs a checar (uma por linha, vazio = health deste app)
+          <textarea
+            className="mono"
+            rows={3}
+            placeholder="http://app:8000/api/health"
+            value={targets}
+            onChange={(e) => setTargets(e.target.value)}
+          />
+        </label>
       )}
       <label>
         fail_times (opcional)
