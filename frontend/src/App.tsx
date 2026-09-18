@@ -11,8 +11,10 @@ function statusBadge(status: string) {
 }
 
 function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
-  const [type, setType] = useState('send_email')
+  const [type, setType] = useState<'send_email' | 'generate_report'>('send_email')
   const [to, setTo] = useState('teste@email.com')
+  const [report, setReport] = useState('sales')
+  const [period, setPeriod] = useState('2026-09')
   const [failTimes, setFailTimes] = useState('')
   const [sleepSeconds, setSleepSeconds] = useState('')
   const [idempotencyKey, setIdempotencyKey] = useState(() => `ui-${crypto.randomUUID().slice(0, 8)}`)
@@ -24,7 +26,11 @@ function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
     setBusy(true)
     setError(null)
 
-    const payload: Record<string, unknown> = { to }
+    const payload: Record<string, unknown> =
+      type === 'send_email'
+        ? { to }
+        : { report, period }
+
     if (failTimes !== '') payload.fail_times = Number(failTimes)
     if (sleepSeconds !== '') payload.sleep_seconds = Number(sleepSeconds)
 
@@ -47,14 +53,31 @@ function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
     <form className="form" onSubmit={onSubmit}>
       <label>
         Tipo
-        <select value={type} onChange={(e) => setType(e.target.value)}>
+        <select
+          value={type}
+          onChange={(e) => setType(e.target.value as 'send_email' | 'generate_report')}
+        >
           <option value="send_email">send_email</option>
+          <option value="generate_report">generate_report</option>
         </select>
       </label>
-      <label>
-        Destino (payload.to)
-        <input value={to} onChange={(e) => setTo(e.target.value)} required />
-      </label>
+      {type === 'send_email' ? (
+        <label>
+          Destino (payload.to)
+          <input value={to} onChange={(e) => setTo(e.target.value)} required />
+        </label>
+      ) : (
+        <>
+          <label>
+            Relatório (payload.report)
+            <input value={report} onChange={(e) => setReport(e.target.value)} required />
+          </label>
+          <label>
+            Período (payload.period)
+            <input value={period} onChange={(e) => setPeriod(e.target.value)} />
+          </label>
+        </>
+      )}
       <label>
         fail_times (opcional)
         <input
@@ -90,7 +113,7 @@ function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
         </button>
       </div>
       {error && <p className="error">{error}</p>}
-      <p className="hint">Workers pegam da fila MySQL. Reenviar a mesma chave não duplica o job.</p>
+      <p className="hint">Workers processam a fila (`QUEUE_DRIVER`). A mesma idempotency_key não duplica o job.</p>
     </form>
   )
 }

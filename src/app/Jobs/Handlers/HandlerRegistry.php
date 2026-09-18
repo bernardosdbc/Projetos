@@ -10,6 +10,7 @@ class HandlerRegistry
     {
         return match ($type) {
             'send_email' => app(SendEmailHandler::class),
+            'generate_report' => app(GenerateReportHandler::class),
             default => throw new RuntimeException("Unknown job type: {$type}"),
         };
     }
