@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Contracts\JobQueueInterface;
+use App\Enums\JobPriority;
 use App\Models\Job;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Redis;
@@ -12,18 +13,24 @@ use Illuminate\Support\Facades\Redis;
  *
  * MySQL continua como registro durável (API / stats / idempotency_key).
  * Redis decide quem está ready / delayed / processing:
- *  - jobs:ready      LIST   (claim via BRPOPLPUSH → jobs:processing)
- *  - jobs:delayed    ZSET   score = unix available_at
- *  - jobs:processing LIST   (jobs reservados)
- *  - jobs:meta:{id}  HASH   reserved_at, reserved_by
+ *  - jobs:ready:{priority}  LIST   um por nível (claim via RPOPLPUSH → jobs:processing)
+ *  - jobs:delayed           ZSET   score = unix available_at, member = "{priority}:{id}"
+ *  - jobs:processing        LIST   (jobs reservados, sem distinção de prioridade)
+ *  - jobs:meta:{id}         HASH   reserved_at, reserved_by, priority
+ *
+ * Prioridade é decidida só pelo Redis (qual lista o claim varre primeiro);
+ * MySQL guarda a coluna `priority` apenas como registro durável/API.
  */
 class RedisJobQueueService implements JobQueueInterface
 {
-    private const READY = 'jobs:ready';
+    private const READY_PREFIX = 'jobs:ready:';
     private const DELAYED = 'jobs:delayed';
     private const PROCESSING = 'jobs:processing';
 
-    public function enqueue(string $type, array $payload, string $idempotencyKey): Job
+    /** Ordem de varredura do claim — deve bater com App\Enums\JobPriority. */
+    private const PRIORITIES = ['critical', 'high', 'normal', 'low'];
+
+    public function enqueue(string $type, array $payload, string $idempotencyKey, JobPriority $priority = JobPriority::Normal): Job
     {
         try {
             $job = Job::create([
@@ -31,6 +38,7 @@ class RedisJobQueueService implements JobQueueInterface
                 'payload' => $payload,
                 'idempotency_key' => $idempotencyKey,
                 'status' => 'pending',
+                'priority' => $priority,
                 'available_at' => now(),
             ]);
         } catch (QueryException $exception) {
@@ -41,7 +49,7 @@ class RedisJobQueueService implements JobQueueInterface
             return Job::where('idempotency_key', $idempotencyKey)->firstOrFail();
         }
 
-        $this->schedule((int) $job->id, $job->available_at?->getTimestamp() ?? time());
+        $this->requeue($job);
 
         return $job;
     }
@@ -50,34 +58,28 @@ class RedisJobQueueService implements JobQueueInterface
     {
         $this->promoteDelayed();
 
-        $jobId = Redis::brpoplpush(self::READY, self::PROCESSING, 1);
+        foreach (self::PRIORITIES as $priority) {
+            $jobId = Redis::rpoplpush($this->readyKey($priority), self::PROCESSING);
+
+            if ($jobId !== null && $jobId !== false) {
+                $job = $this->reserve((int) $jobId, $workerId);
+                if ($job !== null) {
+                    return $job;
+                }
+            }
+        }
+
+        // Idle: block briefly on the lowest-priority list instead of busy-spinning.
+        // A higher-priority job that arrives mid-block waits out this 1s timeout
+        // before the next claimNextJob() sweep picks it up — bounded latency,
+        // acceptable at this project's scale (not a sub-second-SLA system).
+        $jobId = Redis::brpoplpush($this->readyKey('low'), self::PROCESSING, 1);
 
         if ($jobId === null || $jobId === false) {
             return null;
         }
 
-        $jobId = (int) $jobId;
-        $job = Job::query()->find($jobId);
-
-        if ($job === null || $job->status === 'completed' || $job->status === 'dead') {
-            $this->forgetProcessing($jobId);
-
-            return null;
-        }
-
-        $job->update([
-            'status' => 'processing',
-            'reserved_at' => now(),
-            'reserved_by' => $workerId,
-            'attempts' => $job->attempts + 1,
-        ]);
-
-        Redis::hmset($this->metaKey($jobId), [
-            'reserved_at' => (string) time(),
-            'reserved_by' => $workerId,
-        ]);
-
-        return $job->fresh();
+        return $this->reserve((int) $jobId, $workerId);
     }
 
     public function markCompleted(Job $job): void
@@ -104,7 +106,7 @@ class RedisJobQueueService implements JobQueueInterface
         $job->available_at = now()->addSeconds(BackoffCalculator::secondsFor($job->attempts));
         $job->save();
 
-        $this->schedule((int) $job->id, $job->available_at->getTimestamp());
+        $this->requeue($job);
     }
 
     public function recoverStuckJobs(int $timeoutSeconds = 120): int
@@ -122,8 +124,11 @@ class RedisJobQueueService implements JobQueueInterface
                 continue;
             }
 
+            // Read priority from meta before forgetProcessing() deletes the hash.
+            $priority = (string) (Redis::hget($this->metaKey($jobId), 'priority') ?: JobPriority::Normal->value);
+
             $this->forgetProcessing($jobId);
-            Redis::lpush(self::READY, (string) $jobId);
+            Redis::lpush($this->readyKey($priority), (string) $jobId);
 
             Job::query()
                 ->whereKey($jobId)
@@ -139,15 +144,47 @@ class RedisJobQueueService implements JobQueueInterface
         return $recovered;
     }
 
+    public function requeue(Job $job): void
+    {
+        $this->schedule((int) $job->id, $job->priority->value, $job->available_at?->getTimestamp() ?? time());
+    }
+
+    private function reserve(int $jobId, string $workerId): ?Job
+    {
+        $job = Job::query()->find($jobId);
+
+        if ($job === null || $job->status === 'completed' || $job->status === 'dead') {
+            $this->forgetProcessing($jobId);
+
+            return null;
+        }
+
+        $job->update([
+            'status' => 'processing',
+            'reserved_at' => now(),
+            'reserved_by' => $workerId,
+            'attempts' => $job->attempts + 1,
+        ]);
+
+        Redis::hmset($this->metaKey($jobId), [
+            'reserved_at' => (string) time(),
+            'reserved_by' => $workerId,
+            'priority' => $job->priority->value,
+        ]);
+
+        return $job->fresh();
+    }
+
     private function promoteDelayed(): int
     {
         $now = (string) time();
         $ids = Redis::zrangebyscore(self::DELAYED, '-inf', $now) ?: [];
         $moved = 0;
 
-        foreach ($ids as $rawId) {
-            if ((int) Redis::zrem(self::DELAYED, $rawId) === 1) {
-                Redis::lpush(self::READY, (string) $rawId);
+        foreach ($ids as $member) {
+            if ((int) Redis::zrem(self::DELAYED, $member) === 1) {
+                [$priority, $jobId] = explode(':', (string) $member, 2);
+                Redis::lpush($this->readyKey($priority), $jobId);
                 $moved++;
             }
         }
@@ -155,21 +192,26 @@ class RedisJobQueueService implements JobQueueInterface
         return $moved;
     }
 
-    private function schedule(int $jobId, int $availableAtUnix): void
+    private function schedule(int $jobId, string $priority, int $availableAtUnix): void
     {
         if ($availableAtUnix <= time()) {
-            Redis::lpush(self::READY, (string) $jobId);
+            Redis::lpush($this->readyKey($priority), (string) $jobId);
 
             return;
         }
 
-        Redis::zadd(self::DELAYED, $availableAtUnix, (string) $jobId);
+        Redis::zadd(self::DELAYED, $availableAtUnix, $priority.':'.$jobId);
     }
 
     private function forgetProcessing(int $jobId): void
     {
         Redis::lrem(self::PROCESSING, 0, (string) $jobId);
         Redis::del($this->metaKey($jobId));
+    }
+
+    private function readyKey(string $priority): string
+    {
+        return self::READY_PREFIX.$priority;
     }
 
     private function metaKey(int $jobId): string

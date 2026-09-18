@@ -11,6 +11,10 @@
   --processing: #c45c00;
   --pending: #3d5a80;
   --dead: #7a1f2b;
+  --prio-critical: #8a1c9c;
+  --prio-high: #a8501a;
+  --prio-normal: #5c6b73;
+  --prio-low: #8fa0a8;
   --shadow: 0 18px 50px rgba(11, 31, 42, 0.08);
   font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
   color: var(--ink);
@@ -323,6 +327,11 @@ textarea {
 .badge.processing { color: var(--processing); }
 .badge.completed { color: var(--ok); }
 .badge.dead { color: var(--dead); }
+
+.badge.prio-critical { color: var(--prio-critical); }
+.badge.prio-high { color: var(--prio-high); }
+.badge.prio-normal { color: var(--prio-normal); }
+.badge.prio-low { color: var(--prio-low); }
 
 .detail {
   display: grid;

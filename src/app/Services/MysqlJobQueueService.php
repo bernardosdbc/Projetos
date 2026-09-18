@@ -3,13 +3,14 @@
 namespace App\Services;
 
 use App\Contracts\JobQueueInterface;
+use App\Enums\JobPriority;
 use App\Models\Job;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 class MysqlJobQueueService implements JobQueueInterface
 {
-    public function enqueue(string $type, array $payload, string $idempotencyKey): Job
+    public function enqueue(string $type, array $payload, string $idempotencyKey, JobPriority $priority = JobPriority::Normal): Job
     {
         try {
             return Job::create([
@@ -17,6 +18,7 @@ class MysqlJobQueueService implements JobQueueInterface
                 'payload' => $payload,
                 'idempotency_key' => $idempotencyKey,
                 'status' => 'pending',
+                'priority' => $priority,
                 'available_at' => now(),
             ]);
         } catch (QueryException $exception) {
@@ -34,6 +36,9 @@ class MysqlJobQueueService implements JobQueueInterface
             $query = Job::query()
                 ->where('status', 'pending')
                 ->where('available_at', '<=', now())
+                // ENUM column sorts by declaration order (App\Enums\JobPriority),
+                // so this is a plain index-backed sort — critical claimed first.
+                ->orderBy('priority')
                 ->orderBy('available_at');
 
             // QUEUE_CLAIM_LOCK=false is only for the negative calibration in PLANO §9.2.
@@ -91,5 +96,11 @@ class MysqlJobQueueService implements JobQueueInterface
             ->where('status', 'processing')
             ->where('reserved_at', '<', now()->subSeconds($timeoutSeconds))
             ->update(['status' => 'pending', 'available_at' => now()]);
+    }
+
+    public function requeue(Job $job): void
+    {
+        // No-op: claimNextJob() polls the jobs table directly by
+        // (status, priority, available_at) — there's no external index to update.
     }
 }

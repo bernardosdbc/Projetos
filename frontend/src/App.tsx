@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { api } from './api'
-import type { Job, JobStats } from './api'
+import { api, JOB_PRIORITIES } from './api'
+import type { Job, JobPriority, JobStats } from './api'
 import './index.css'
 
 const STATUS_FILTERS = ['all', 'pending', 'processing', 'completed', 'dead'] as const
@@ -10,8 +10,13 @@ function statusBadge(status: string) {
   return <span className={`badge ${status}`}>{status}</span>
 }
 
+function priorityBadge(priority: string) {
+  return <span className={`badge prio-${priority}`}>{priority}</span>
+}
+
 function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
   const [type, setType] = useState<'send_email' | 'generate_report'>('send_email')
+  const [priority, setPriority] = useState<JobPriority>('normal')
   const [to, setTo] = useState('teste@email.com')
   const [report, setReport] = useState('sales')
   const [period, setPeriod] = useState('2026-09')
@@ -39,6 +44,7 @@ function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
         type,
         payload,
         idempotency_key: idempotencyKey,
+        priority,
       })
       onCreated(job)
       setIdempotencyKey(`ui-${crypto.randomUUID().slice(0, 8)}`)
@@ -59,6 +65,16 @@ function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
         >
           <option value="send_email">send_email</option>
           <option value="generate_report">generate_report</option>
+        </select>
+      </label>
+      <label>
+        Prioridade
+        <select value={priority} onChange={(e) => setPriority(e.target.value as JobPriority)}>
+          {JOB_PRIORITIES.map((item) => (
+            <option key={item} value={item}>
+              {item}
+            </option>
+          ))}
         </select>
       </label>
       {type === 'send_email' ? (
@@ -144,11 +160,16 @@ function JobDetail({ job, onRetry }: { job: Job | null; onRetry: (job: Job) => v
     <div className="detail">
       <div className="row" style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem' }}>
         <h3 className="mono">#{job.id}</h3>
-        {statusBadge(job.status)}
+        <div className="row" style={{ display: 'flex', gap: '0.4rem' }}>
+          {priorityBadge(job.priority)}
+          {statusBadge(job.status)}
+        </div>
       </div>
       <dl>
         <dt>type</dt>
         <dd className="mono">{job.type}</dd>
+        <dt>priority</dt>
+        <dd className="mono">{job.priority}</dd>
         <dt>attempts</dt>
         <dd className="mono">
           {job.attempts} / {job.max_attempts}
@@ -318,7 +339,10 @@ export default function App() {
                 >
                   <div className="row">
                     <strong className="mono">#{job.id}</strong>
-                    {statusBadge(job.status)}
+                    <div className="row" style={{ display: 'flex', gap: '0.4rem' }}>
+                      {priorityBadge(job.priority)}
+                      {statusBadge(job.status)}
+                    </div>
                   </div>
                   <div className="row">
                     <span className="mono">{job.type}</span>

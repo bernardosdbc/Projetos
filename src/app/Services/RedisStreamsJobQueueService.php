@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Contracts\JobQueueInterface;
+use App\Enums\JobPriority;
 use App\Models\Job;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Redis;
@@ -14,20 +15,27 @@ use Throwable;
  * Predis via Laravel não serializa bem XADD/XREADGROUP com arrays;
  * comandos de stream usam executeRaw com prefixo explícito.
  *
- *  - jobs:stream          STREAM
- *  - group "workers"      consumer = --worker-id
- *  - jobs:delayed         ZSET (Facade Redis — ok)
- *  - jobs:stream:msg:{id} STRING message id (Facade)
+ *  - jobs:stream:{priority}  STREAM  um por nível, mesmo grupo em todos
+ *  - group "workers"         consumer = --worker-id
+ *  - jobs:delayed             ZSET (Facade Redis — ok), member = "{priority}:{id}"
+ *  - jobs:stream:msg:{id}     STRING "{priority}:{message-id}" (Facade)
+ *
+ * O claim varre os streams em ordem de prioridade (não-bloqueante) e só
+ * bloqueia, como último recurso, no stream de menor prioridade — mesma
+ * lógica e o mesmo tradeoff de latência do driver `redis` (LIST).
  */
 class RedisStreamsJobQueueService implements JobQueueInterface
 {
-    private const STREAM = 'jobs:stream';
+    private const STREAM_PREFIX = 'jobs:stream:';
     private const GROUP = 'workers';
     private const DELAYED = 'jobs:delayed';
 
-    public function enqueue(string $type, array $payload, string $idempotencyKey): Job
+    /** Ordem de varredura do claim — deve bater com App\Enums\JobPriority. */
+    private const PRIORITIES = ['critical', 'high', 'normal', 'low'];
+
+    public function enqueue(string $type, array $payload, string $idempotencyKey, JobPriority $priority = JobPriority::Normal): Job
     {
-        $this->ensureGroup();
+        $this->ensureGroup($priority->value);
 
         try {
             $job = Job::create([
@@ -35,6 +43,7 @@ class RedisStreamsJobQueueService implements JobQueueInterface
                 'payload' => $payload,
                 'idempotency_key' => $idempotencyKey,
                 'status' => 'pending',
+                'priority' => $priority,
                 'available_at' => now(),
             ]);
         } catch (QueryException $exception) {
@@ -45,52 +54,26 @@ class RedisStreamsJobQueueService implements JobQueueInterface
             return Job::where('idempotency_key', $idempotencyKey)->firstOrFail();
         }
 
-        $this->schedule((int) $job->id, $job->available_at?->getTimestamp() ?? time());
+        $this->requeue($job);
 
         return $job;
     }
 
     public function claimNextJob(string $workerId): ?Job
     {
-        $this->ensureGroup();
+        $this->ensureGroups();
         $this->promoteDelayed();
 
-        for ($attempt = 0; $attempt < 8; $attempt++) {
-            $entries = $this->raw([
-                'XREADGROUP', 'GROUP', self::GROUP, $workerId,
-                'COUNT', '1', 'BLOCK', $attempt === 0 ? '1000' : '200',
-                'STREAMS', $this->streamKey(), '>',
-            ]);
-
-            [$messageId, $jobId] = $this->parseFirstEntry($entries);
-            if ($messageId === null) {
-                return null;
+        foreach (self::PRIORITIES as $priority) {
+            $job = $this->readOne($priority, $workerId, null);
+            if ($job !== null) {
+                return $job;
             }
-            if ($jobId === null) {
-                $this->raw(['XACK', $this->streamKey(), self::GROUP, $messageId]);
-                continue;
-            }
-
-            $job = Job::query()->find($jobId);
-            if ($job === null || $job->status === 'completed' || $job->status === 'dead') {
-                $this->raw(['XACK', $this->streamKey(), self::GROUP, $messageId]);
-                Redis::del($this->msgKey($jobId));
-                continue;
-            }
-
-            $job->update([
-                'status' => 'processing',
-                'reserved_at' => now(),
-                'reserved_by' => $workerId,
-                'attempts' => $job->attempts + 1,
-            ]);
-
-            Redis::set($this->msgKey($jobId), $messageId);
-
-            return $job->fresh();
         }
 
-        return null;
+        // Idle: block briefly on the lowest-priority stream instead of busy-spinning.
+        // Same bounded-latency tradeoff as the LIST driver (see claimNextJob there).
+        return $this->readOne('low', $workerId, '1000');
     }
 
     public function markCompleted(Job $job): void
@@ -116,63 +99,130 @@ class RedisStreamsJobQueueService implements JobQueueInterface
         $job->available_at = now()->addSeconds(BackoffCalculator::secondsFor($job->attempts));
         $job->save();
 
-        $this->schedule((int) $job->id, $job->available_at->getTimestamp());
+        $this->requeue($job);
     }
 
     public function recoverStuckJobs(int $timeoutSeconds = 120): int
     {
-        $this->ensureGroup();
+        $this->ensureGroups();
         $this->promoteDelayed();
 
         $recovered = 0;
         $minIdleMs = (string) (max(1, $timeoutSeconds) * 1000);
 
-        $result = $this->raw([
-            'XAUTOCLAIM', $this->streamKey(), self::GROUP, 'reaper',
-            $minIdleMs, '0-0', 'COUNT', '50',
-        ]);
+        foreach (self::PRIORITIES as $priority) {
+            $result = $this->raw([
+                'XAUTOCLAIM', $this->streamKey($priority), self::GROUP, 'reaper',
+                $minIdleMs, '0-0', 'COUNT', '50',
+            ]);
 
-        $entries = is_array($result) ? ($result[1] ?? []) : [];
-        foreach ($entries as $entry) {
-            if (! is_array($entry) || count($entry) < 2) {
-                continue;
+            $entries = is_array($result) ? ($result[1] ?? []) : [];
+            foreach ($entries as $entry) {
+                if (! is_array($entry) || count($entry) < 2) {
+                    continue;
+                }
+
+                $messageId = (string) $entry[0];
+                $jobId = $this->fieldValue($entry[1] ?? [], 'job_id');
+                if ($jobId === null) {
+                    $this->raw(['XACK', $this->streamKey($priority), self::GROUP, $messageId]);
+                    continue;
+                }
+
+                $jobId = (int) $jobId;
+                $this->raw(['XACK', $this->streamKey($priority), self::GROUP, $messageId]);
+                Redis::del($this->msgKey($jobId));
+
+                Job::query()
+                    ->whereKey($jobId)
+                    ->where('status', 'processing')
+                    ->update([
+                        'status' => 'pending',
+                        'available_at' => now(),
+                    ]);
+
+                $this->raw(['XADD', $this->streamKey($priority), '*', 'job_id', (string) $jobId]);
+                $recovered++;
             }
-
-            $messageId = (string) $entry[0];
-            $jobId = $this->fieldValue($entry[1] ?? [], 'job_id');
-            if ($jobId === null) {
-                $this->raw(['XACK', $this->streamKey(), self::GROUP, $messageId]);
-                continue;
-            }
-
-            $jobId = (int) $jobId;
-            $this->raw(['XACK', $this->streamKey(), self::GROUP, $messageId]);
-            Redis::del($this->msgKey($jobId));
-
-            Job::query()
-                ->whereKey($jobId)
-                ->where('status', 'processing')
-                ->update([
-                    'status' => 'pending',
-                    'available_at' => now(),
-                ]);
-
-            $this->raw(['XADD', $this->streamKey(), '*', 'job_id', (string) $jobId]);
-            $recovered++;
         }
 
         return $recovered;
     }
 
-    private function ensureGroup(): void
+    public function requeue(Job $job): void
     {
-        $len = $this->raw(['XLEN', $this->streamKey()]);
+        $this->schedule((int) $job->id, $job->priority->value, $job->available_at?->getTimestamp() ?? time());
+    }
+
+    private function readOne(string $priority, string $workerId, ?string $blockMs): ?Job
+    {
+        // Up to a few attempts to skip past stale entries in THIS stream — the
+        // ensureGroup() bootstrap "_init" sentinel, or a message left over from
+        // a job that's already completed/dead — before concluding it's genuinely
+        // empty. Without this, a single stale entry would make the sweep skip a
+        // whole priority level even though a real job is queued right behind it.
+        for ($attempt = 0; $attempt < 8; $attempt++) {
+            $command = ['XREADGROUP', 'GROUP', self::GROUP, $workerId, 'COUNT', '1'];
+            if ($blockMs !== null && $attempt === 0) {
+                $command[] = 'BLOCK';
+                $command[] = $blockMs;
+            }
+            $command = [...$command, 'STREAMS', $this->streamKey($priority), '>'];
+
+            $entries = $this->raw($command);
+            [$messageId, $jobId] = $this->parseFirstEntry($entries);
+
+            if ($messageId === null) {
+                return null;
+            }
+
+            if ($jobId === null) {
+                $this->raw(['XACK', $this->streamKey($priority), self::GROUP, $messageId]);
+
+                continue;
+            }
+
+            $job = Job::query()->find($jobId);
+            if ($job === null || $job->status === 'completed' || $job->status === 'dead') {
+                $this->raw(['XACK', $this->streamKey($priority), self::GROUP, $messageId]);
+                Redis::del($this->msgKey($jobId));
+
+                continue;
+            }
+
+            $job->update([
+                'status' => 'processing',
+                'reserved_at' => now(),
+                'reserved_by' => $workerId,
+                'attempts' => $job->attempts + 1,
+            ]);
+
+            Redis::set($this->msgKey($jobId), $priority.':'.$messageId);
+
+            return $job->fresh();
+        }
+
+        return null;
+    }
+
+    private function ensureGroups(): void
+    {
+        foreach (self::PRIORITIES as $priority) {
+            $this->ensureGroup($priority);
+        }
+    }
+
+    private function ensureGroup(string $priority): void
+    {
+        $stream = $this->streamKey($priority);
+
+        $len = $this->raw(['XLEN', $stream]);
         if ((int) $len === 0) {
-            $this->raw(['XADD', $this->streamKey(), '*', '_init', '1']);
+            $this->raw(['XADD', $stream, '*', '_init', '1']);
         }
 
         try {
-            $this->raw(['XGROUP', 'CREATE', $this->streamKey(), self::GROUP, '0']);
+            $this->raw(['XGROUP', 'CREATE', $stream, self::GROUP, '0']);
         } catch (Throwable $exception) {
             if (! str_contains($exception->getMessage(), 'BUSYGROUP')) {
                 throw $exception;
@@ -180,15 +230,15 @@ class RedisStreamsJobQueueService implements JobQueueInterface
         }
     }
 
-    private function schedule(int $jobId, int $availableAtUnix): void
+    private function schedule(int $jobId, string $priority, int $availableAtUnix): void
     {
         if ($availableAtUnix <= time()) {
-            $this->raw(['XADD', $this->streamKey(), '*', 'job_id', (string) $jobId]);
+            $this->raw(['XADD', $this->streamKey($priority), '*', 'job_id', (string) $jobId]);
 
             return;
         }
 
-        Redis::zadd(self::DELAYED, $availableAtUnix, (string) $jobId);
+        Redis::zadd(self::DELAYED, $availableAtUnix, $priority.':'.$jobId);
     }
 
     private function promoteDelayed(): int
@@ -196,9 +246,10 @@ class RedisStreamsJobQueueService implements JobQueueInterface
         $ids = Redis::zrangebyscore(self::DELAYED, '-inf', (string) time()) ?: [];
         $moved = 0;
 
-        foreach ($ids as $rawId) {
-            if ((int) Redis::zrem(self::DELAYED, $rawId) === 1) {
-                $this->raw(['XADD', $this->streamKey(), '*', 'job_id', (string) $rawId]);
+        foreach ($ids as $member) {
+            if ((int) Redis::zrem(self::DELAYED, $member) === 1) {
+                [$priority, $jobId] = explode(':', (string) $member, 2);
+                $this->raw(['XADD', $this->streamKey($priority), '*', 'job_id', $jobId]);
                 $moved++;
             }
         }
@@ -208,11 +259,14 @@ class RedisStreamsJobQueueService implements JobQueueInterface
 
     private function ack(int $jobId): void
     {
-        $messageId = Redis::get($this->msgKey($jobId));
-        if ($messageId) {
-            $this->raw(['XACK', $this->streamKey(), self::GROUP, $messageId]);
-            Redis::del($this->msgKey($jobId));
+        $stored = Redis::get($this->msgKey($jobId));
+        if (! $stored) {
+            return;
         }
+
+        [$priority, $messageId] = explode(':', (string) $stored, 2);
+        $this->raw(['XACK', $this->streamKey($priority), self::GROUP, $messageId]);
+        Redis::del($this->msgKey($jobId));
     }
 
     private function msgKey(int $jobId): string
@@ -220,9 +274,9 @@ class RedisStreamsJobQueueService implements JobQueueInterface
         return 'jobs:stream:msg:'.$jobId;
     }
 
-    private function streamKey(): string
+    private function streamKey(string $priority): string
     {
-        return (string) config('database.redis.options.prefix', '').self::STREAM;
+        return (string) config('database.redis.options.prefix', '').self::STREAM_PREFIX.$priority;
     }
 
     /**

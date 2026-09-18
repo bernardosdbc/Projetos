@@ -1,8 +1,12 @@
 export type JobStatus = 'pending' | 'processing' | 'completed' | 'dead'
+export type JobPriority = 'critical' | 'high' | 'normal' | 'low'
+
+export const JOB_PRIORITIES: JobPriority[] = ['critical', 'high', 'normal', 'low']
 
 export type Job = {
   id: number
   type: string
+  priority: JobPriority
   payload: Record<string, unknown>
   idempotency_key: string
   status: JobStatus
@@ -62,6 +66,7 @@ export const api = {
     type: string
     payload: Record<string, unknown>
     idempotency_key: string
+    priority?: JobPriority
   }) =>
     request<Job>('/api/jobs', {
       method: 'POST',

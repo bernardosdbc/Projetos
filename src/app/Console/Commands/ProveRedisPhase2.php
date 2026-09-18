@@ -94,7 +94,8 @@ class ProveRedisPhase2 extends Command
             } catch (\Throwable $e) {
                 $queue->markFailedOrDead($claimed, $e);
                 $claimed->refresh();
-                $score = Redis::zscore('jobs:delayed', (string) $claimed->id);
+                // ZSET member is "{priority}:{id}" (see JobPriority/schedule()).
+                $score = Redis::zscore('jobs:delayed', $claimed->priority->value.':'.$claimed->id);
                 $expected = BackoffCalculator::secondsFor($claimed->attempts);
                 $this->line("loop{$loop}:status={$claimed->status} attempts={$claimed->attempts} backoff={$expected}s delayed_score=".($score ?? 'null'));
 
@@ -162,7 +163,11 @@ class ProveRedisPhase2 extends Command
 
     private function promoteJobNow(int $jobId): void
     {
-        Redis::zrem('jobs:delayed', (string) $jobId);
+        // Keys are partitioned by priority (App\Enums\JobPriority); this proof
+        // always enqueues at the default 'normal' level via jobs:seed-concurrency.
+        $priority = Job::query()->whereKey($jobId)->first()?->priority->value ?? 'normal';
+
+        Redis::zrem('jobs:delayed', $priority.':'.$jobId);
         Job::query()->whereKey($jobId)->update([
             'status' => 'pending',
             'available_at' => now(),
@@ -172,10 +177,11 @@ class ProveRedisPhase2 extends Command
 
         if (config('jobs.driver') === 'redis_streams') {
             $prefix = (string) config('database.redis.options.prefix', '');
-            $stream = $prefix.'jobs:stream';
+            $stream = $prefix.'jobs:stream:'.$priority;
             $client = Redis::connection()->client();
-            $messageId = Redis::get('jobs:stream:msg:'.$jobId);
-            if ($messageId) {
+            $stored = Redis::get('jobs:stream:msg:'.$jobId);
+            if ($stored) {
+                [, $messageId] = explode(':', (string) $stored, 2);
                 $client->executeRaw(['XACK', $stream, 'workers', $messageId]);
                 Redis::del('jobs:stream:msg:'.$jobId);
             }
@@ -184,9 +190,9 @@ class ProveRedisPhase2 extends Command
             return;
         }
 
-        Redis::lrem('jobs:ready', 0, (string) $jobId);
+        Redis::lrem('jobs:ready:'.$priority, 0, (string) $jobId);
         Redis::lrem('jobs:processing', 0, (string) $jobId);
         Redis::del('jobs:meta:'.$jobId);
-        Redis::lpush('jobs:ready', (string) $jobId);
+        Redis::lpush('jobs:ready:'.$priority, (string) $jobId);
     }
 }

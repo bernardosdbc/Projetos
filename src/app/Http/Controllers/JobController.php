@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Contracts\JobQueueInterface;
+use App\Enums\JobPriority;
 use App\Http\Requests\StoreJobRequest;
 use App\Models\Job;
 use Illuminate\Http\JsonResponse;
@@ -38,7 +39,17 @@ class JobController extends Controller
 
     public function store(StoreJobRequest $request, JobQueueInterface $queue): JsonResponse
     {
-        $job = $queue->enqueue($request->string('type')->toString(), $request->array('payload'), $request->string('idempotency_key')->toString());
+        $priority = $request->filled('priority')
+            ? JobPriority::from($request->string('priority')->toString())
+            : JobPriority::Normal;
+
+        $job = $queue->enqueue(
+            $request->string('type')->toString(),
+            $request->array('payload'),
+            $request->string('idempotency_key')->toString(),
+            $priority,
+        );
+
         return response()->json($job, 202);
     }
 

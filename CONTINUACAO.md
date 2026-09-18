@@ -2,7 +2,40 @@
 
 Este documento registra o ponto de retomada. Plano: [PLANO.md](PLANO.md).
 
-## Checkpoint atual — variante Redis Streams
+## Checkpoint atual — prioridade (CRITICAL/HIGH/NORMAL/LOW)
+
+Coluna `jobs.priority` (MySQL ENUM — sorteia por ordem de declaração, então
+`ORDER BY priority` já claim critical primeiro sem FIELD()/CASE). Ordem
+canônica vive em `App\Enums\JobPriority` e tem que bater com a migration e
+com o array `PRIORITIES` dos dois drivers Redis.
+
+| Driver | Estrutura por prioridade | Claim |
+|---|---|---|
+| `mysql` | uma tabela, coluna `priority` | `ORDER BY priority, available_at` |
+| `redis` | 4 listas `jobs:ready:{priority}` | sweep `RPOPLPUSH` não-bloqueante em ordem; fallback bloqueante em `low` |
+| `redis_streams` | 4 streams `jobs:stream:{priority}`, mesmo grupo `workers` | sweep `XREADGROUP` não-bloqueante em ordem; fallback bloqueante em `low` |
+
+Provado (`docker compose exec app php artisan jobs:prove-redis --only-unit`
+e teste manual com lote low/low/normal/high/critical + `sleep_seconds`):
+ordem de claim `critical > high > normal > low` nos três drivers; empate
+resolvido por ordem de criação.
+
+**Bug achado e corrigido durante a prova**: `ensureGroup()` semeia cada
+stream novo com uma entrada sentinela `_init` pra poder criar o consumer
+group num stream vazio. Uma varredura de uma leitura só por prioridade lia
+a sentinela, dava ACK e pulava pra próxima prioridade sem voltar — perdendo
+o job real logo atrás dela. Fix: `readOne()` re-tenta (até 8x) na mesma
+stream antes de desistir dela, restaurando o comportamento do loop
+original de tentativa única (agora por stream, dentro do sweep).
+
+**Bug pré-existente, não relacionado à prioridade, corrigido de brinde**:
+`DeadJobController::retry` só fazia `$job->update()` no MySQL — nos drivers
+Redis/Streams isso nunca sinalizava um worker, então um dead job "revivido"
+ficava `pending` pra sempre. Agora chama `$queue->requeue($job)` depois do
+update; `requeue()` é no-op no driver MySQL (que faz polling direto na
+tabela) e reempurra pra ready-list/stream certos nos outros dois.
+
+## Checkpoint anterior — variante Redis Streams
 
 `QUEUE_DRIVER=redis_streams` (XREADGROUP + XACK + delayed ZSET).
 
