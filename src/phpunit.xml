@@ -44,6 +44,11 @@
         <env name="REDIS_HOST" value="redis"/>
         <env name="REDIS_PORT" value="6379"/>
         <env name="REDIS_DB" value="1"/>
+        <!-- HTTP-layer tests don't need to re-prove driver-specific claim
+             mechanics (the contract suite already covers all 3); mysql keeps
+             them deterministic. One dead-job-retry test explicitly switches
+             to redis to guard the requeue() wiring bug fixed this session. -->
+        <env name="QUEUE_DRIVER" value="mysql"/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>

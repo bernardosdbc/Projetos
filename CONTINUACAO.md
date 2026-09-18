@@ -2,7 +2,26 @@
 
 Este documento registra o ponto de retomada. Plano: [PLANO.md](PLANO.md).
 
-## Checkpoint atual — suíte de testes automatizados
+## Checkpoint atual — testes de HTTP (CI + suíte de contrato)
+
+50 testes agora (`composer test`, ~24s). Os 15 novos batem nas rotas de
+verdade (`JobControllerTest`, `DeadJobControllerTest`) em vez de resolver
+os serviços direto — fecham o que a suíte de contrato não cobria:
+`StoreJobRequest` (validação de `priority`/`execute_at`, 422 com
+`assertJsonValidationErrors` — não checa texto de mensagem, que ainda vem
+como chave de tradução crua por falta dos `lang/` files), `JobController`
+(index/stats/show, idempotência via HTTP) e `DeadJobController` (409 pra
+job não-morto, revive, e o `requeue()` de verdade sob Redis).
+
+`QUEUE_DRIVER=mysql` fixo no `phpunit.xml` pra esses testes — não
+precisam reprovar mecânica de claim por driver (a suíte de contrato já
+cobre os 3). Só `test_retry_makes_the_job_claimable_again_under_redis`
+troca pra `redis` via `config(['jobs.driver' => 'redis']) +
+app()->forgetInstance(JobQueueInterface::class)`, porque é exatamente o
+driver onde o bug do `requeue()` ausente vivia — testar isso sob mysql
+não pegaria uma regressão ali (mysql nunca teve o bug).
+
+## Checkpoint anterior — suíte de testes automatizados
 
 `docker compose exec app composer test` (ou `php artisan test`) — 35 testes,
 ~27s, contra MySQL/Redis reais (não sqlite: `lockForUpdate` não tem
