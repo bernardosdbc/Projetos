@@ -2,7 +2,44 @@
 
 Este documento registra o ponto de retomada. Plano: [PLANO.md](PLANO.md).
 
-## Checkpoint atual — worker especializado por tipo (`--types=`)
+## Checkpoint atual — suíte de testes automatizados
+
+`docker compose exec app composer test` (ou `php artisan test`) — 35 testes,
+~27s, contra MySQL/Redis reais (não sqlite: `lockForUpdate` não tem
+semântica de lock real lá, testar contra sqlite seria falso-positivo pro
+que o projeto existe pra provar).
+
+**Isolamento**: banco `jobs_db_test` (criado via
+`docker/mysql/init-test-db.sql`, montado em `/docker-entrypoint-initdb.d`
+— roda sozinho num volume novo; neste ambiente já existente eu criei manual
+uma vez) + Redis índice 1 (`phpunit.xml`). Nunca toca `jobs_db`/índice 0,
+onde você mexe manualmente.
+
+**Design**: uma suíte de contrato (`JobQueueContractTestCase`, abstrata)
+com os asserts uma vez só, rodada 3× via subclasse por driver
+(`{Mysql,Redis,RedisStreams}JobQueueServiceTest`) resolvendo a classe
+concreta direto — não precisa trocar `QUEUE_DRIVER` nem recriar container.
+Cobre: idempotência, ordem de prioridade, `execute_at`, retry/backoff,
+morte após `max_attempts`, `requeue()` pós-retry de dead job, recovery de
+job travado, filtro `--types=`. **Fora de escopo, deliberadamente**:
+concorrência real entre processos (§9.1/§9.2) — isso continua nos
+comandos `jobs:prove-redis`/`jobs:prove-negative-lock`, que já fazem isso
+com workers de verdade; forçar via `pcntl_fork` dentro do PHPUnit é mais
+frágil que o retorno, o próprio PLANO.md já chamava isso de stretch de
+baixo retorno.
+
+**Bug real achado escrevendo os testes** (não era bug do teste): `Job::create()`
+não repovoa no objeto em memória as colunas com `DEFAULT` do banco
+(`attempts`, `max_attempts`) quando não passadas explicitamente — então
+`POST /jobs` sempre devolveu esses campos ausentes, só um `GET` depois
+mostrava certo. Corrigido nos 3 `enqueue()` com `->fresh()` após o
+`Job::create()`. Prova de que a suíte já paga o investimento.
+
+Removidos `tests/Feature/ExampleTest.php` e `tests/Unit/ExampleTest.php`
+(scaffold do Laravel, nunca adaptados — o Feature nem passava, faltava
+`APP_KEY`).
+
+## Checkpoint anterior — worker especializado por tipo (`--types=`)
 
 `php artisan jobs:work --worker-id=worker-1 --types=smoke_check` restringe
 o que aquele worker aceita. `JobQueueInterface::claimNextJob()` ganhou um

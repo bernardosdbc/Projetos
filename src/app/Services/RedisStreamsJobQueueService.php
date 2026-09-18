@@ -38,6 +38,9 @@ class RedisStreamsJobQueueService implements JobQueueInterface
         $this->ensureGroup($priority->value);
 
         try {
+            // ->fresh(): Job::create() doesn't backfill DB column defaults
+            // (attempts, max_attempts) onto the in-memory instance, so the
+            // API response would otherwise omit them until a later GET.
             $job = Job::create([
                 'type' => $type,
                 'payload' => $payload,
@@ -45,7 +48,7 @@ class RedisStreamsJobQueueService implements JobQueueInterface
                 'status' => 'pending',
                 'priority' => $priority,
                 'available_at' => $executeAt ?? now(),
-            ]);
+            ])->fresh();
         } catch (QueryException $exception) {
             if ($exception->getCode() !== '23000') {
                 throw $exception;

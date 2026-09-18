@@ -13,6 +13,9 @@ class MysqlJobQueueService implements JobQueueInterface
     public function enqueue(string $type, array $payload, string $idempotencyKey, JobPriority $priority = JobPriority::Normal, ?\DateTimeInterface $executeAt = null): Job
     {
         try {
+            // ->fresh(): Job::create() doesn't backfill DB column defaults
+            // (attempts, max_attempts) onto the in-memory instance, so the
+            // API response would otherwise omit them until a later GET.
             return Job::create([
                 'type' => $type,
                 'payload' => $payload,
@@ -20,7 +23,7 @@ class MysqlJobQueueService implements JobQueueInterface
                 'status' => 'pending',
                 'priority' => $priority,
                 'available_at' => $executeAt ?? now(),
-            ]);
+            ])->fresh();
         } catch (QueryException $exception) {
             if ($exception->getCode() !== '23000') {
                 throw $exception;

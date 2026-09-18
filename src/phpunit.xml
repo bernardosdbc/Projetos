@@ -19,13 +19,31 @@
     </source>
     <php>
         <env name="APP_ENV" value="testing"/>
+        <env name="APP_KEY" value="base64:7Gc2EggY5Brueduj1LvhoPtt1iocQU+g9NNTymB5njo="/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>
         <env name="CACHE_STORE" value="array"/>
-        <env name="DB_CONNECTION" value="sqlite"/>
-        <env name="DB_DATABASE" value=":memory:"/>
+        <!--
+            Real MySQL, not sqlite: lockForUpdate() (PLANO §9.2) has no
+            equivalent row-locking semantics in sqlite, so testing against it
+            would silently not exercise the thing this project is about.
+            Separate DB from jobs_db (which you poke at manually) so
+            RefreshDatabase's migrate+truncate never touches your own data.
+        -->
+        <env name="DB_CONNECTION" value="mysql"/>
+        <env name="DB_HOST" value="mysql"/>
+        <env name="DB_PORT" value="3306"/>
+        <env name="DB_DATABASE" value="jobs_db_test"/>
+        <env name="DB_USERNAME" value="root"/>
+        <env name="DB_PASSWORD" value="root"/>
         <env name="DB_URL" value=""/>
+        <!-- Same reasoning: separate Redis logical DB (index 1) so
+             flushdb() in tests never touches whatever's on index 0. -->
+        <env name="REDIS_CLIENT" value="predis"/>
+        <env name="REDIS_HOST" value="redis"/>
+        <env name="REDIS_PORT" value="6379"/>
+        <env name="REDIS_DB" value="1"/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>
