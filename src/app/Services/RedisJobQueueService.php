@@ -54,18 +54,14 @@ class RedisJobQueueService implements JobQueueInterface
         return $job;
     }
 
-    public function claimNextJob(string $workerId): ?Job
+    public function claimNextJob(string $workerId, array $allowedTypes = []): ?Job
     {
         $this->promoteDelayed();
 
         foreach (self::PRIORITIES as $priority) {
-            $jobId = Redis::rpoplpush($this->readyKey($priority), self::PROCESSING);
-
-            if ($jobId !== null && $jobId !== false) {
-                $job = $this->reserve((int) $jobId, $workerId);
-                if ($job !== null) {
-                    return $job;
-                }
+            $job = $this->claimFrom($priority, $workerId, $allowedTypes, false);
+            if ($job !== null) {
+                return $job;
             }
         }
 
@@ -73,13 +69,7 @@ class RedisJobQueueService implements JobQueueInterface
         // A higher-priority job that arrives mid-block waits out this 1s timeout
         // before the next claimNextJob() sweep picks it up — bounded latency,
         // acceptable at this project's scale (not a sub-second-SLA system).
-        $jobId = Redis::brpoplpush($this->readyKey('low'), self::PROCESSING, 1);
-
-        if ($jobId === null || $jobId === false) {
-            return null;
-        }
-
-        return $this->reserve((int) $jobId, $workerId);
+        return $this->claimFrom('low', $workerId, $allowedTypes, true);
     }
 
     public function markCompleted(Job $job): void
@@ -149,12 +139,49 @@ class RedisJobQueueService implements JobQueueInterface
         $this->schedule((int) $job->id, $job->priority->value, $job->available_at?->getTimestamp() ?? time());
     }
 
-    private function reserve(int $jobId, string $workerId): ?Job
+    /**
+     * Up to a few attempts to drain past stale or wrong-type entries at the
+     * head of THIS priority's list before giving up on it — same rationale
+     * as the retry loop in RedisStreamsJobQueueService::readOne().
+     */
+    private function claimFrom(string $priority, string $workerId, array $allowedTypes, bool $blocking): ?Job
+    {
+        for ($attempt = 0; $attempt < 8; $attempt++) {
+            if ($blocking && $attempt === 0) {
+                $jobId = Redis::brpoplpush($this->readyKey($priority), self::PROCESSING, 1);
+            } else {
+                $jobId = Redis::rpoplpush($this->readyKey($priority), self::PROCESSING);
+            }
+
+            if ($jobId === null || $jobId === false) {
+                return null;
+            }
+
+            $job = $this->reserve((int) $jobId, $workerId, $allowedTypes);
+            if ($job !== null) {
+                return $job;
+            }
+        }
+
+        return null;
+    }
+
+    private function reserve(int $jobId, string $workerId, array $allowedTypes = []): ?Job
     {
         $job = Job::query()->find($jobId);
 
         if ($job === null || $job->status === 'completed' || $job->status === 'dead') {
             $this->forgetProcessing($jobId);
+
+            return null;
+        }
+
+        if ($allowedTypes !== [] && ! in_array($job->type, $allowedTypes, true)) {
+            // Not stale, just not for this worker — put it back for someone
+            // else instead of forgetting it. Don't touch status/attempts:
+            // this worker never actually attempted the job.
+            Redis::lrem(self::PROCESSING, 0, (string) $jobId);
+            Redis::lpush($this->readyKey($job->priority->value), (string) $jobId);
 
             return null;
         }

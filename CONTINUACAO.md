@@ -2,7 +2,41 @@
 
 Este documento registra o ponto de retomada. Plano: [PLANO.md](PLANO.md).
 
-## Checkpoint atual — handler `smoke_check`
+## Checkpoint atual — worker especializado por tipo (`--types=`)
+
+`php artisan jobs:work --worker-id=worker-1 --types=smoke_check` restringe
+o que aquele worker aceita. `JobQueueInterface::claimNextJob()` ganhou um
+2º parâmetro `array $allowedTypes = []` (vazio = qualquer tipo, default
+compatível com todos os call sites antigos).
+
+**Decisão central**: recusar um job de tipo errado não pode contar como
+tentativa (`attempts`) nem mudar `status` — não é culpa do job ter caído
+num worker especializado. Por driver:
+
+| Driver | Como "devolve" um job de tipo errado |
+|---|---|
+| `mysql` | nem chega a pegar — `WHERE type IN (...)` já filtra na query com lock |
+| `redis` (LIST) | `RPOPLPUSH` já moveu pra `processing`; se o tipo não bate, `LREM` + `LPUSH` de volta na mesma lista de prioridade, sem tocar no job |
+| `redis_streams` | não dá pra "devolver" uma entry de stream — `XACK` a original + `XADD` uma nova apontando pro mesmo `job_id` na mesma stream |
+
+Nos dois drivers Redis isso reaproveita o loop de retry por prioridade que
+já existia (o mesmo que resolveu o bug da sentinela `_init` — ver
+checkpoint de prioridade): um worker restrito dreno as entradas erradas
+até achar uma do seu tipo ou esgotar 8 tentativas naquele nível antes de
+passar pra próxima prioridade.
+
+**docker-compose.yml não foi alterado** — os 3 workers continuam sem
+`--types` (aceitam qualquer tipo), porque as provas de concorrência
+(`jobs:prove-redis`, `jobs:prove-negative-lock`) esperam que qualquer um
+dos 3 pegue `send_email`. Pra especializar de verdade, edite o `command`
+de um worker no compose ou rode um avulso via
+`docker compose exec app php artisan jobs:work --types=smoke_check ...`.
+
+Validado nos 3 drivers via `claimNextJob('id', ['smoke_check'])` direto e
+via `jobs:work --types=` real: worker restrito só completa o tipo
+permitido; os outros ficam `pending`/`attempts=0` intactos.
+
+## Checkpoint anterior — handler `smoke_check`
 
 Primeira fatia de uma ideia de usar este repo como laboratório de fila no
 trabalho (health-check enfileirado, com retry/backoff/DLQ de graça em vez

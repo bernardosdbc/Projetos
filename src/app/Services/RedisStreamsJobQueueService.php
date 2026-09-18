@@ -59,13 +59,13 @@ class RedisStreamsJobQueueService implements JobQueueInterface
         return $job;
     }
 
-    public function claimNextJob(string $workerId): ?Job
+    public function claimNextJob(string $workerId, array $allowedTypes = []): ?Job
     {
         $this->ensureGroups();
         $this->promoteDelayed();
 
         foreach (self::PRIORITIES as $priority) {
-            $job = $this->readOne($priority, $workerId, null);
+            $job = $this->readOne($priority, $workerId, null, $allowedTypes);
             if ($job !== null) {
                 return $job;
             }
@@ -73,7 +73,7 @@ class RedisStreamsJobQueueService implements JobQueueInterface
 
         // Idle: block briefly on the lowest-priority stream instead of busy-spinning.
         // Same bounded-latency tradeoff as the LIST driver (see claimNextJob there).
-        return $this->readOne('low', $workerId, '1000');
+        return $this->readOne('low', $workerId, '1000', $allowedTypes);
     }
 
     public function markCompleted(Job $job): void
@@ -154,7 +154,7 @@ class RedisStreamsJobQueueService implements JobQueueInterface
         $this->schedule((int) $job->id, $job->priority->value, $job->available_at?->getTimestamp() ?? time());
     }
 
-    private function readOne(string $priority, string $workerId, ?string $blockMs): ?Job
+    private function readOne(string $priority, string $workerId, ?string $blockMs, array $allowedTypes = []): ?Job
     {
         // Up to a few attempts to skip past stale entries in THIS stream — the
         // ensureGroup() bootstrap "_init" sentinel, or a message left over from
@@ -186,6 +186,16 @@ class RedisStreamsJobQueueService implements JobQueueInterface
             if ($job === null || $job->status === 'completed' || $job->status === 'dead') {
                 $this->raw(['XACK', $this->streamKey($priority), self::GROUP, $messageId]);
                 Redis::del($this->msgKey($jobId));
+
+                continue;
+            }
+
+            if ($allowedTypes !== [] && ! in_array($job->type, $allowedTypes, true)) {
+                // Not stale, just not for this worker. Streams have no "put back" —
+                // ack this entry and re-append a fresh one so another consumer can
+                // still pick it up. Status/attempts are untouched either way.
+                $this->raw(['XACK', $this->streamKey($priority), self::GROUP, $messageId]);
+                $this->raw(['XADD', $this->streamKey($priority), '*', 'job_id', (string) $jobId]);
 
                 continue;
             }

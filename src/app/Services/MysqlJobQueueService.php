@@ -30,9 +30,9 @@ class MysqlJobQueueService implements JobQueueInterface
         }
     }
 
-    public function claimNextJob(string $workerId): ?Job
+    public function claimNextJob(string $workerId, array $allowedTypes = []): ?Job
     {
-        return DB::transaction(function () use ($workerId): ?Job {
+        return DB::transaction(function () use ($workerId, $allowedTypes): ?Job {
             $query = Job::query()
                 ->where('status', 'pending')
                 ->where('available_at', '<=', now())
@@ -40,6 +40,10 @@ class MysqlJobQueueService implements JobQueueInterface
                 // so this is a plain index-backed sort — critical claimed first.
                 ->orderBy('priority')
                 ->orderBy('available_at');
+
+            if ($allowedTypes !== []) {
+                $query->whereIn('type', $allowedTypes);
+            }
 
             // QUEUE_CLAIM_LOCK=false is only for the negative calibration in PLANO §9.2.
             if (filter_var(env('QUEUE_CLAIM_LOCK', true), FILTER_VALIDATE_BOOLEAN)) {

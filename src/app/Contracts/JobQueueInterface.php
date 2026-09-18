@@ -15,7 +15,14 @@ interface JobQueueInterface
      */
     public function enqueue(string $type, array $payload, string $idempotencyKey, JobPriority $priority = JobPriority::Normal, ?\DateTimeInterface $executeAt = null): Job;
 
-    public function claimNextJob(string $workerId): ?Job;
+    /**
+     * @param  list<string>  $allowedTypes  Empty = claim any type. Otherwise the
+     *                                      worker only accepts these job types —
+     *                                      declining a wrong-type job never counts
+     *                                      as an attempt (it isn't this job's fault
+     *                                      it hit a specialized worker).
+     */
+    public function claimNextJob(string $workerId, array $allowedTypes = []): ?Job;
 
     public function markCompleted(Job $job): void;
 
