@@ -66,8 +66,13 @@ services:
     environment:
       MYSQL_DATABASE: jobs_db
       MYSQL_ROOT_PASSWORD: root
+    # Host-side port only, for connecting an external client — app/workers
+    # reach this over the compose network as `mysql:3306` either way. Not
+    # 3306 on the host: GitHub Actions' ubuntu-latest runners ship with
+    # their own MySQL already bound to it, which fails `docker compose up`
+    # with "port is already allocated" before a single container starts.
     ports:
-      - "3306:3306"
+      - "13306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./docker/mysql/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql
@@ -79,8 +84,9 @@ services:
 
   redis:
     image: redis:7-alpine
+    # Same reasoning as mysql's port above: host-side convenience only.
     ports:
-      - "6379:6379"
+      - "16379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
