@@ -21,8 +21,8 @@ class ProveRedisPhase2 extends Command
 
     public function handle(JobQueueInterface $queue, HandlerRegistry $handlers): int
     {
-        if (config('jobs.driver') !== 'redis') {
-            $this->error('QUEUE_DRIVER must be redis.');
+        if (! in_array(config('jobs.driver'), ['redis', 'redis_streams'], true)) {
+            $this->error('QUEUE_DRIVER must be redis or redis_streams.');
 
             return self::FAILURE;
         }
@@ -124,9 +124,14 @@ class ProveRedisPhase2 extends Command
         }
 
         $attemptsAtReserve = (int) $claimed->attempts;
-        Redis::hset('jobs:meta:'.$claimed->id, 'reserved_at', (string) (time() - 120));
 
-        $recovered = $queue->recoverStuckJobs(30);
+        if (config('jobs.driver') === 'redis_streams') {
+            sleep(2);
+            $recovered = $queue->recoverStuckJobs(1);
+        } else {
+            Redis::hset('jobs:meta:'.$claimed->id, 'reserved_at', (string) (time() - 120));
+            $recovered = $queue->recoverStuckJobs(30);
+        }
         $claimed->refresh();
 
         $this->line("recovered={$recovered} status={$claimed->status} attempts={$claimed->attempts}");
@@ -158,13 +163,27 @@ class ProveRedisPhase2 extends Command
     private function promoteJobNow(int $jobId): void
     {
         Redis::zrem('jobs:delayed', (string) $jobId);
-        // Ensure pending in MySQL and ready in Redis for claim.
         Job::query()->whereKey($jobId)->update([
             'status' => 'pending',
             'available_at' => now(),
             'reserved_at' => null,
             'reserved_by' => null,
         ]);
+
+        if (config('jobs.driver') === 'redis_streams') {
+            $prefix = (string) config('database.redis.options.prefix', '');
+            $stream = $prefix.'jobs:stream';
+            $client = Redis::connection()->client();
+            $messageId = Redis::get('jobs:stream:msg:'.$jobId);
+            if ($messageId) {
+                $client->executeRaw(['XACK', $stream, 'workers', $messageId]);
+                Redis::del('jobs:stream:msg:'.$jobId);
+            }
+            $client->executeRaw(['XADD', $stream, '*', 'job_id', (string) $jobId]);
+
+            return;
+        }
+
         Redis::lrem('jobs:ready', 0, (string) $jobId);
         Redis::lrem('jobs:processing', 0, (string) $jobId);
         Redis::del('jobs:meta:'.$jobId);

@@ -20,10 +20,10 @@ class SeedConcurrencyJobs extends Command
             DB::table('job_runs')->truncate();
             DB::table('idempotency_receipts')->truncate();
             DB::table('jobs')->truncate();
-            if (config('jobs.driver') === 'redis') {
+            if (in_array(config('jobs.driver'), ['redis', 'redis_streams'], true)) {
                 Redis::flushdb();
             }
-            $this->info('Truncated jobs tables'.(config('jobs.driver') === 'redis' ? ' and Redis DB' : '').'.');
+            $this->info('Truncated jobs tables'.(in_array(config('jobs.driver'), ['redis', 'redis_streams'], true) ? ' and Redis DB' : '').'.');
         }
 
         for ($i = 1; $i <= $count; $i++) {
