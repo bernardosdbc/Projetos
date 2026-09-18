@@ -47,6 +47,11 @@ class MysqlJobQueueService implements JobQueueInterface
                 return null;
             }
 
+            // Widen the race window when locking is off (PLANO §9.2 calibration only).
+            if (! filter_var(env('QUEUE_CLAIM_LOCK', true), FILTER_VALIDATE_BOOLEAN)) {
+                usleep(100_000);
+            }
+
             $job->update([
                 'status' => 'processing',
                 'reserved_at' => now(),

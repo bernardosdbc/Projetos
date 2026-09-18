@@ -2,51 +2,44 @@
 
 Este documento registra o ponto de retomada. Plano: [PLANO.md](PLANO.md).
 
-## Checkpoint atual — Fase 2 (Redis) fatia de provas fechada
+## Checkpoint atual — §9.2 negativo fechado; stack de volta em Redis
 
-`QUEUE_DRIVER=redis`. Commit recente: front + driver Redis (`be3c359`+) e provas desta fatia.
+`QUEUE_DRIVER=redis` · `QUEUE_CLAIM_LOCK=true`
 
-### Ambiente
+### Prova negativa MySQL §9.2 — passou
 
-- API `http://localhost:8010` · Redis + MySQL healthy
-- Workers Up
-- Front: `cd frontend && npm run dev` → http://localhost:5173
+Com `QUEUE_DRIVER=mysql` + `QUEUE_CLAIM_LOCK=false` (e `usleep` didático no claim):
 
-### Provas Redis — passaram
+```text
+completed=200 dupes=200 workers=3
+```
 
-| Prova | Resultado |
-|---|---|
-| Concorrência 200 jobs | `completed=200`, `dupes=0`, `workers=3` |
-| Retry / delayed ZSET | fail_times=2 → delayed scores → completed attempt 3 (`JOB_BACKOFF_BASE=2` na prova) |
-| Recovery stuck | `recovered=1`, attempts intactos no recover, +1 no re-claim, completed |
+Sem `lockForUpdate`, **todos** os 200 jobs tiveram execução duplicada em `job_runs`. Isso calibra a prova positiva da Fase 1.
 
 Comando:
 
 ```powershell
-docker compose exec app php artisan jobs:seed-concurrency 200 --fresh
-# com workers parados:
-docker compose stop worker-1 worker-2 worker-3
-docker compose exec app php artisan jobs:prove-redis --only-unit
-docker compose up -d worker-1 worker-2 worker-3
+# temporário no .env: QUEUE_DRIVER=mysql e QUEUE_CLAIM_LOCK=false
+docker compose up -d --force-recreate app worker-1 worker-2 worker-3
+docker compose exec app php artisan jobs:prove-negative-lock 200
+# restaurar: QUEUE_DRIVER=redis e QUEUE_CLAIM_LOCK=true + recreate
 ```
 
-### Arquitetura
+### Provas Redis (Fase 2) — ok
 
-| Peça | Papel |
+| Prova | Resultado |
 |---|---|
-| `JobQueueInterface` | Contrato |
-| `MysqlJobQueueService` | Fase 1 |
-| `RedisJobQueueService` | Fase 2 `BRPOPLPUSH` + ZSET |
-| `jobs:prove-redis` | Bateria de provas |
-| `JOB_BACKOFF_BASE` | Base do backoff (default 30) |
+| 200 jobs | `dupes=0`, `workers=3` |
+| Retry / ZSET | completed attempt 3 |
+| Recovery stuck | attempts intactos no recover |
 
 ### Próxima retomada (opcional)
 
-1. Teste negativo MySQL §9.2 (`QUEUE_CLAIM_LOCK=false`)
-2. Variante Streams `XREADGROUP`
-3. Push do commit para `origin`
-4. Roadmap: prioridade, `execute_at` explícito, heartbeats no dashboard
+1. Variante Streams `XREADGROUP` e comparar com `BRPOPLPUSH`
+2. Prioridade / `execute_at` / heartbeats no dashboard
+3. Commit desta fatia §9.2 (`jobs:prove-negative-lock` + usleep didático)
 
-### Voltar à Fase 1
+### Ambiente
 
-`QUEUE_DRIVER=mysql` no `.env` e reiniciar app/workers.
+- API http://localhost:8010 · Front http://localhost:5173
+- `jobs:prove-redis --only-unit` · `jobs:prove-negative-lock`
