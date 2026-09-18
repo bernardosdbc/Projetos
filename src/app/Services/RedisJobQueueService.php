@@ -30,7 +30,7 @@ class RedisJobQueueService implements JobQueueInterface
     /** Ordem de varredura do claim — deve bater com App\Enums\JobPriority. */
     private const PRIORITIES = ['critical', 'high', 'normal', 'low'];
 
-    public function enqueue(string $type, array $payload, string $idempotencyKey, JobPriority $priority = JobPriority::Normal): Job
+    public function enqueue(string $type, array $payload, string $idempotencyKey, JobPriority $priority = JobPriority::Normal, ?\DateTimeInterface $executeAt = null): Job
     {
         try {
             $job = Job::create([
@@ -39,7 +39,7 @@ class RedisJobQueueService implements JobQueueInterface
                 'idempotency_key' => $idempotencyKey,
                 'status' => 'pending',
                 'priority' => $priority,
-                'available_at' => now(),
+                'available_at' => $executeAt ?? now(),
             ]);
         } catch (QueryException $exception) {
             if ($exception->getCode() !== '23000') {

@@ -7,7 +7,13 @@ use App\Models\Job;
 
 interface JobQueueInterface
 {
-    public function enqueue(string $type, array $payload, string $idempotencyKey, JobPriority $priority = JobPriority::Normal): Job;
+    /**
+     * $executeAt defaults to now(); a future timestamp schedules the job
+     * (PLANO.md roadmap "Agendamento") — it's just the seed for `available_at`,
+     * the same column retry backoff already uses, so claim/delayed-set logic
+     * needs no separate scheduling path.
+     */
+    public function enqueue(string $type, array $payload, string $idempotencyKey, JobPriority $priority = JobPriority::Normal, ?\DateTimeInterface $executeAt = null): Job;
 
     public function claimNextJob(string $workerId): ?Job;
 

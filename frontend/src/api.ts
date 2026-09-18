@@ -67,6 +67,7 @@ export const api = {
     payload: Record<string, unknown>
     idempotency_key: string
     priority?: JobPriority
+    execute_at?: string
   }) =>
     request<Job>('/api/jobs', {
       method: 'POST',

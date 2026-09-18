@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\DB;
 
 class MysqlJobQueueService implements JobQueueInterface
 {
-    public function enqueue(string $type, array $payload, string $idempotencyKey, JobPriority $priority = JobPriority::Normal): Job
+    public function enqueue(string $type, array $payload, string $idempotencyKey, JobPriority $priority = JobPriority::Normal, ?\DateTimeInterface $executeAt = null): Job
     {
         try {
             return Job::create([
@@ -19,7 +19,7 @@ class MysqlJobQueueService implements JobQueueInterface
                 'idempotency_key' => $idempotencyKey,
                 'status' => 'pending',
                 'priority' => $priority,
-                'available_at' => now(),
+                'available_at' => $executeAt ?? now(),
             ]);
         } catch (QueryException $exception) {
             if ($exception->getCode() !== '23000') {

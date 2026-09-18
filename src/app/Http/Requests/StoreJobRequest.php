@@ -15,6 +15,7 @@ class StoreJobRequest extends FormRequest
             'payload' => ['required', 'array'],
             'idempotency_key' => ['required', 'string', 'max:255'],
             'priority' => ['sometimes', Rule::enum(JobPriority::class)],
+            'execute_at' => ['sometimes', 'nullable', 'date'],
         ];
     }
 }

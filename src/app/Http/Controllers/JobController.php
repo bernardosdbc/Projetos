@@ -43,11 +43,16 @@ class JobController extends Controller
             ? JobPriority::from($request->string('priority')->toString())
             : JobPriority::Normal;
 
+        $executeAt = $request->filled('execute_at')
+            ? \Illuminate\Support\Carbon::parse($request->string('execute_at')->toString())
+            : null;
+
         $job = $queue->enqueue(
             $request->string('type')->toString(),
             $request->array('payload'),
             $request->string('idempotency_key')->toString(),
             $priority,
+            $executeAt,
         );
 
         return response()->json($job, 202);

@@ -17,6 +17,7 @@ function priorityBadge(priority: string) {
 function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
   const [type, setType] = useState<'send_email' | 'generate_report'>('send_email')
   const [priority, setPriority] = useState<JobPriority>('normal')
+  const [executeAt, setExecuteAt] = useState('')
   const [to, setTo] = useState('teste@email.com')
   const [report, setReport] = useState('sales')
   const [period, setPeriod] = useState('2026-09')
@@ -45,9 +46,11 @@ function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
         payload,
         idempotency_key: idempotencyKey,
         priority,
+        execute_at: executeAt !== '' ? new Date(executeAt).toISOString() : undefined,
       })
       onCreated(job)
       setIdempotencyKey(`ui-${crypto.randomUUID().slice(0, 8)}`)
+      setExecuteAt('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Falha ao criar job')
     } finally {
@@ -76,6 +79,14 @@ function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
             </option>
           ))}
         </select>
+      </label>
+      <label>
+        Agendar para (opcional)
+        <input
+          type="datetime-local"
+          value={executeAt}
+          onChange={(e) => setExecuteAt(e.target.value)}
+        />
       </label>
       {type === 'send_email' ? (
         <label>

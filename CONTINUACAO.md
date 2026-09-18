@@ -2,7 +2,25 @@
 
 Este documento registra o ponto de retomada. Plano: [PLANO.md](PLANO.md).
 
-## Checkpoint atual — prioridade (CRITICAL/HIGH/NORMAL/LOW)
+## Checkpoint atual — agendamento (`execute_at`)
+
+Sem coluna nova: `execute_at` no `POST /jobs` é só o seed de `available_at`
+(o mesmo campo que o retry/backoff já usa) — `JobQueueInterface::enqueue()`
+ganhou um 5º parâmetro `?DateTimeInterface $executeAt`, default `null` =
+`now()`. Nos drivers Redis, `requeue()` já decide sozinho ZADD (delayed) vs
+push imediato comparando o timestamp com `time()`; nenhuma lógica nova de
+agendamento foi necessária, só passar o valor adiante — exatamente o que o
+roadmap do PLANO.md previa ("grande parte já existe implicitamente via
+available_at").
+
+Validado nos drivers `redis_streams` e `redis` (LIST): job fica `pending`
+até `available_at` e é reservado ~1s depois (granularidade do polling);
+`execute_at` no passado vira imediato; `execute_at` inválido dá 422.
+`mysql` não testado de novo nesta rodada — a query de claim já é a mesma
+usada (e provada) pelo backoff de retry, `execute_at` só alimenta a mesma
+coluna.
+
+## Checkpoint anterior — prioridade (CRITICAL/HIGH/NORMAL/LOW)
 
 Coluna `jobs.priority` (MySQL ENUM — sorteia por ordem de declaração, então
 `ORDER BY priority` já claim critical primeiro sem FIELD()/CASE). Ordem
