@@ -12,6 +12,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # src/.env is gitignored (correctly — it's local config, not something
+      # to commit), so a fresh checkout has none and docker-compose.yml's
+      # env_file: references fail immediately. Seed it from .env.example,
+      # same as the composer "setup" script does for local dev, and give it
+      # a real APP_KEY so `php artisan serve` (the app container's default
+      # command) doesn't choke on a blank one; composer test overrides
+      # APP_KEY via phpunit.xml regardless, so this key is only for the
+      # container staying up.
+      - name: Prepare .env
+        run: |
+          cp src/.env.example src/.env
+          sed -i 's/^APP_KEY=$/APP_KEY=base64:7Gc2EggY5Brueduj1LvhoPtt1iocQU+g9NNTymB5njo=/' src/.env
+
       # `app` depends_on mysql/redis with condition: service_healthy, so this
       # one command also starts and waits on both — same stack as local dev,
       # not a separate CI-only setup.
