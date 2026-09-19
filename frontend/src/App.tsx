@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api, JOB_PRIORITIES } from './api'
-import type { Job, JobPriority, JobStats } from './api'
+import type { Job, JobPriority, JobStats, Worker } from './api'
 import './index.css'
 
 const STATUS_FILTERS = ['all', 'pending', 'processing', 'completed', 'dead'] as const
@@ -12,6 +12,35 @@ function statusBadge(status: string) {
 
 function priorityBadge(priority: string) {
   return <span className={`badge prio-${priority}`}>{priority}</span>
+}
+
+function isScheduled(job: Job) {
+  return job.status === 'pending' && job.available_at !== null && new Date(job.available_at) > new Date()
+}
+
+function WorkersPanel({ workers }: { workers: Worker[] }) {
+  return (
+    <div className="panel">
+      <h2>Workers</h2>
+      {workers.length === 0 && <p className="hint">Nenhum worker reportou heartbeat ainda.</p>}
+      <ul className="worker-list">
+        {workers.map((worker) => (
+          <li key={worker.worker_id}>
+            <span className="worker-id">
+              <span className={`health-dot ${worker.online ? 'ok' : 'down'}`} />
+              <strong className="mono">{worker.worker_id}</strong>
+            </span>
+            <span className="row" style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+              {worker.status === 'processing' && worker.current_job_id !== null && (
+                <span className="hint mono">job #{worker.current_job_id}</span>
+              )}
+              <span className={`badge ${worker.status}`}>{worker.status}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
 }
 
 function CreateJobForm({ onCreated }: { onCreated: (job: Job) => void }) {
@@ -235,6 +264,7 @@ function JobDetail({ job, onRetry }: { job: Job | null; onRetry: (job: Job) => v
 export default function App() {
   const [healthOk, setHealthOk] = useState<boolean | null>(null)
   const [stats, setStats] = useState<JobStats | null>(null)
+  const [workers, setWorkers] = useState<Worker[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
   const [filter, setFilter] = useState<(typeof STATUS_FILTERS)[number]>('all')
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -247,14 +277,16 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [health, nextStats, nextJobs] = await Promise.all([
+      const [health, nextStats, nextJobs, nextWorkers] = await Promise.all([
         api.health(),
         api.stats(),
         api.listJobs(filter === 'all' ? undefined : filter),
+        api.workers(),
       ])
       setHealthOk(health.status === 'ok')
       setStats(nextStats)
       setJobs(nextJobs)
+      setWorkers(nextWorkers)
       setError(null)
     } catch (err) {
       setHealthOk(false)
@@ -332,6 +364,18 @@ export default function App() {
           <span>Dead</span>
           <strong>{stats?.dead ?? '—'}</strong>
         </div>
+        <div className="stat">
+          <span>Jobs/s</span>
+          <strong>{stats?.jobs_per_second ?? '—'}</strong>
+        </div>
+        <div className="stat">
+          <span>Tempo médio</span>
+          <strong>{stats?.avg_processing_ms != null ? `${stats.avg_processing_ms}ms` : '—'}</strong>
+        </div>
+        <div className="stat">
+          <span>Taxa de falha</span>
+          <strong>{stats ? `${(stats.failure_rate * 100).toFixed(1)}%` : '—'}</strong>
+        </div>
       </section>
 
       {error && <p className="error">{error}</p>}
@@ -343,6 +387,8 @@ export default function App() {
         </section>
 
         <section className="stack">
+          <WorkersPanel workers={workers} />
+
           <div className="panel">
             <div className="panel-head">
               <h2>Fila</h2>
@@ -379,8 +425,11 @@ export default function App() {
                   </div>
                   <div className="row">
                     <span className="mono">{job.type}</span>
-                    <span className="hint mono">
-                      {job.attempts}/{job.max_attempts}
+                    <span className="row" style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                      {isScheduled(job) && <span className="hint mono">agendado</span>}
+                      <span className="hint mono">
+                        {job.attempts}/{job.max_attempts}
+                      </span>
                     </span>
                   </div>
                 </li>

@@ -29,11 +29,33 @@ class JobController extends Controller
             ->groupBy('status')
             ->pluck('total', 'status');
 
+        $completed = (int) ($counts['completed'] ?? 0);
+        $dead = (int) ($counts['dead'] ?? 0);
+
+        // Janela de 60s: reflete atividade recente, não a vida inteira da fila.
+        $jobsLastMinute = Job::query()
+            ->where('status', 'completed')
+            ->where('completed_at', '>=', now()->subSeconds(60))
+            ->count();
+
+        // reserved_at → completed_at: tempo do claim até a conclusão (última
+        // tentativa), não da criação — mede o processamento em si, não a
+        // espera na fila.
+        $avgUs = Job::query()
+            ->where('status', 'completed')
+            ->where('completed_at', '>=', now()->subMinutes(5))
+            ->whereNotNull('reserved_at')
+            ->selectRaw('AVG(TIMESTAMPDIFF(MICROSECOND, reserved_at, completed_at)) as avg_us')
+            ->value('avg_us');
+
         return response()->json([
             'pending' => (int) ($counts['pending'] ?? 0),
             'processing' => (int) ($counts['processing'] ?? 0),
-            'completed' => (int) ($counts['completed'] ?? 0),
-            'dead' => (int) ($counts['dead'] ?? 0),
+            'completed' => $completed,
+            'dead' => $dead,
+            'jobs_per_second' => round($jobsLastMinute / 60, 2),
+            'avg_processing_ms' => $avgUs !== null ? round(((float) $avgUs) / 1000, 1) : null,
+            'failure_rate' => ($completed + $dead) > 0 ? round($dead / ($completed + $dead), 4) : 0.0,
         ]);
     }
 

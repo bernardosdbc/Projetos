@@ -21,4 +21,12 @@ return [
     */
     'backoff_base' => (int) env('JOB_BACKOFF_BASE', 30),
 
+    /*
+    | Segundos sem heartbeat até um worker ser considerado OFFLINE no
+    | dashboard. Poucos ciclos do --sleep default (1s) já bastam; bem abaixo
+    | do timeout de job travado (120s) — são perguntas diferentes (worker
+    | vivo? vs. job abandonado?).
+    */
+    'worker_offline_after' => (int) env('WORKER_OFFLINE_AFTER', 8),
+
 ];

@@ -143,6 +143,36 @@ class JobControllerTest extends TestCase
         $response->assertJsonPath('dead', 0);
     }
 
+    public function test_stats_includes_throughput_latency_and_failure_rate(): void
+    {
+        $now = now();
+
+        Job::create([
+            'type' => 'send_email',
+            'payload' => ['to' => 'a@x.com'],
+            'idempotency_key' => 'metrics-completed-1',
+            'status' => 'completed',
+            'available_at' => $now,
+            'reserved_at' => $now->copy()->subSeconds(2),
+            'completed_at' => $now,
+        ]);
+
+        Job::create([
+            'type' => 'send_email',
+            'payload' => ['to' => 'b@x.com'],
+            'idempotency_key' => 'metrics-dead-1',
+            'status' => 'dead',
+            'available_at' => $now,
+        ]);
+
+        $response = $this->getJson('/api/jobs/stats');
+
+        $response->assertOk();
+        $response->assertJsonPath('jobs_per_second', round(1 / 60, 2));
+        $response->assertJsonPath('avg_processing_ms', 2000.0);
+        $response->assertJsonPath('failure_rate', 0.5);
+    }
+
     public function test_show_returns_the_job(): void
     {
         $id = $this->postJson('/api/jobs', [

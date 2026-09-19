@@ -26,6 +26,19 @@ export type JobStats = {
   processing: number
   completed: number
   dead: number
+  jobs_per_second: number
+  avg_processing_ms: number | null
+  failure_rate: number
+}
+
+export type WorkerStatus = 'idle' | 'processing'
+
+export type Worker = {
+  worker_id: string
+  status: WorkerStatus
+  current_job_id: number | null
+  last_seen_at: string
+  online: boolean
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -76,4 +89,5 @@ export const api = {
   deadJobs: () => request<Job[]>('/api/dead-jobs'),
   retryDeadJob: (id: number) =>
     request<Job>(`/api/dead-jobs/${id}/retry`, { method: 'POST' }),
+  workers: () => request<Worker[]>('/api/workers'),
 }

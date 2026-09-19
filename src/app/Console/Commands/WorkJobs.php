@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Contracts\JobQueueInterface;
 use App\Jobs\Handlers\HandlerRegistry;
+use App\Models\WorkerHeartbeat;
 use Illuminate\Console\Command;
 
 class WorkJobs extends Command
@@ -22,6 +23,7 @@ class WorkJobs extends Command
         }
 
         while (true) {
+            WorkerHeartbeat::touch($workerId, 'idle', null);
             $queue->recoverStuckJobs($timeoutSeconds);
             $job = $queue->claimNextJob($workerId, $allowedTypes);
 
@@ -29,6 +31,8 @@ class WorkJobs extends Command
                 sleep((int) $this->option('sleep'));
                 continue;
             }
+
+            WorkerHeartbeat::touch($workerId, 'processing', $job->id);
 
             try {
                 $handlers->for($job->type)->handle($job);
